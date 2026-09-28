@@ -1,4 +1,4 @@
-import socket, sys, json, time, base64
+import socket, sys, json
 
 """
 request info
@@ -15,6 +15,17 @@ class SocketType:
     STATUS = 'status'
     MESSAGE = (0, 100)
     FILE = 'file'
+
+
+def accept_bar(value: int, max: int) -> None:
+    '''
+    int((value/max)*100)
+    '''
+    value += 1
+    k = int((value/max)*100)
+    print('\r' + '[' + ('▮'*(k//5)) + ('*'*((100//5)-(k//5))) + '] ', k, end=f'% {value}:{max}', sep='')
+    if max == value:
+        print()
 
 
 def get_socket() -> socket.socket:
@@ -44,9 +55,10 @@ def data_segmentation(bdata: bytes, size_segment: int = 1024) -> list[bytes]:
     segments = []
     segment_size_header = 2
     segment_size_data = size_segment - segment_size_header
+    segment_count = (len(bdata)//segment_size_data) + 1
 
-    for index in range(0, (len(bdata)//segment_size_data)+1):
-        header = index.to_bytes(segment_size_header)
+    for index in range(0, segment_count):
+        header = (segment_count - index).to_bytes(segment_size_header)
         data = bdata[segment_size_data*index:(segment_size_data*index)+segment_size_data]
         segment = header + data
         segments.append(segment)
@@ -72,8 +84,9 @@ def send_data(sock: socket.socket, address: tuple, data) -> None:
         except socket.timeout:
             request_failed += 1
         else:
+            accept_bar(index, len(segments))
             index += 1
-            print(f'segment-{int.from_bytes(segment[:2])}:', request_failed, 'failed')
+    print('SEND:', len(data), 'FAILED:', request_failed)
 
 
 def accept_data(sock: socket.socket) -> str:
@@ -82,23 +95,28 @@ def accept_data(sock: socket.socket) -> str:
     OUT: Data
     '''
     buffer: bytes = b''
-    sock.settimeout(10)
+    segment_count_max = None
     segment_number_old = None
     while True:
         try:
             segment, sender = sock.recvfrom(1024*32)
-        except socket.timeout:
-            print('timeout')
-            break
-        else:
-            segment_number = segment[:2]
+        finally:
+            segment_number: int = int.from_bytes(segment[:2])
             if segment_number != segment_number_old:
                 buffer = buffer + segment[2:]
-                print(f'segment-{int.from_bytes(segment_number)}:', sender)
-            segment_number_old = segment_number
-            sock.sendto(segment_number, sender)
+                segment_number_old = segment_number
+            if segment_count_max == None:
+                segment_count_max = segment_number
+            accept_bar(
+                (segment_count_max - segment_number),
+                segment_count_max
+            )
+            sock.sendto(segment[:2], sender)
+            if segment_number == 1:
+                break
+    print('ACCEPT:', len(buffer))
 
-    return buffer.decode('utf-8')
+    return buffer
 
 
 def send_message(address: tuple, message: str) -> bool:
@@ -126,24 +144,19 @@ def send_status(address: tuple, sock: socket.socket) -> None:
 
 def send_file(address: tuple, path: str):
     with open(path, '+rb') as file:
-        data_file = file.read()
-    print('send_file:', len(data_file))
-    data = base64.b64encode(data_file).decode('ascii')
+        data = file.read()
     with get_socket() as sock:
-        send_data(sock, address, data.encode('utf-8'))
+        send_data(sock, address, data)
 
 
 def server(address: tuple) -> None:
     with get_socket() as server:
         server.bind(address)
-        print('start server')
-        while True:
-            data = accept_data(server)
-            if data:
-                break
+        print('START SERVER:' f'{address[0]}:{address[1]}')
+        data = accept_data(server)
 
     with open('y.png', '+wb') as file:
-        file.write(base64.b64decode(data))
+        file.write(data)
 
 
 def main(tcomand: list[str]):
