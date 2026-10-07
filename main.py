@@ -1,15 +1,20 @@
 import socket, sys, json
 
 
+class TypeData:
+    message: bytes = int.to_bytes(0)
+    file: bytes = int.to_bytes(1)
+
+
 def accept_bar(value: int, max: int) -> None:
     '''
     Creates a progress bar in the terminal based on the current value and the maximum value.
     '''
     k = int((value/max)*100)
-    bar = '\r' + '[' + ('▮'*(k//5)) + ('*'*((100//5)-(k//5))) + ']'
-    print(bar, str(k) + '%', f'{value}/{max}', end='')
+    bar = '[' + ('∎'*(k//5)) + (' '*((100//5)-(k//5))) + ']'
+    print('\r' + bar, str(k) + '%', f'{value}/{max}', end='')
     if max == value:
-        print()
+        print('\r' + bar, str(k) + '%', f'{value}/{max}', end='\n')
 
 
 def get_socket() -> socket.socket:
@@ -52,7 +57,7 @@ def send_segment(sock: socket.socket, address: tuple, segment: bytes) -> tuple[b
     return status, failed
 
 
-def data_segmentation(data: bytes, size_segment: int = 1024) -> list[bytes]:
+def data_segmentation(data: bytes, typedata: TypeData, size_segment: int = 1024, **kwargs) -> list[bytes]:
     '''
     It segments the data (breaking it into smaller chunks) and adds a header to them.
     The header consists of a 16-bit field storing the segment's sequence number,
@@ -63,6 +68,10 @@ def data_segmentation(data: bytes, size_segment: int = 1024) -> list[bytes]:
     data_size = len(data)
     segment_size_header = 2 # size in bates (16-bit)
     segment_size_data = size_segment - segment_size_header
+    if typedata == TypeData.file:
+        filename: str = kwargs.get('filename').encode('utf-8')
+        data = len(filename).to_bytes(1) + filename + data
+    data = typedata + data
 
     segments = []
     segment_max_number = (data_size // segment_size_data)
@@ -83,11 +92,11 @@ def data_segmentation(data: bytes, size_segment: int = 1024) -> list[bytes]:
     return segments
 
 
-def send_data(sock: socket.socket, address: tuple, data: bytes) -> None:
+def send_data(sock: socket.socket, address: tuple, data: bytes, typedata: TypeData, **kwargs) -> None:
     '''
     Sends data to the recipient in the form of many segments (pieces of data)
     '''
-    segments: list = data_segmentation(data, 1024*32)
+    segments: list = data_segmentation(data, typedata, 1024*32, **kwargs)
     unsuccessful_attempts = 0
 
     for sequence_number, segment in enumerate(segments):
@@ -101,7 +110,7 @@ def send_data(sock: socket.socket, address: tuple, data: bytes) -> None:
     print('SEND:', len(data), 'FAILED:', unsuccessful_attempts)
 
 
-def accept_data(sock: socket.socket) -> bytes:
+def accept_data(sock: socket.socket) -> tuple[bytes, list]:
     '''
     It receives data in the form of segments (data fragments) and assembles them into a single whole,
     while sending an acknowledgment of receipt to the sender for each segment.
@@ -112,16 +121,20 @@ def accept_data(sock: socket.socket) -> bytes:
     segment_start, sender = sock.recvfrom(1024*32)
     sock.sendto(segment_start[:2], sender)
 
-    buffer += segment_start[2:]
+    size_start_header = 3
+    info = [segment_start[2:3]]
+    if info[0] == TypeData.file:
+        size_start_header = int.from_bytes(segment_start[3:4]) + 4
+        info.append(segment_start[4:size_start_header].decode('utf-8'))
+
+    buffer += segment_start[size_start_header:]
     segment_old = segment_start
 
     sock.settimeout(10)
     while int.from_bytes(segment_old[:2]) != 0:
         try:
             segment_current, sender_current = sock.recvfrom(1024*32)
-        except socket.timeout as error:
-            raise error(sender, ', не доступен!')
-        else:
+        finally:
             segment_current_number: bytes = segment_current[:2]
             segment_old_number: bytes = segment_old[:2]
 
@@ -137,12 +150,13 @@ def accept_data(sock: socket.socket) -> bytes:
 
     print('ACCEPT:', len(buffer))
 
-    return buffer
+    return buffer, info
 
 
 def send_message(address: tuple, message: str) -> bool:
     '''Sends the passed message.'''
-    ...
+    with get_socket() as sock:
+        send_data(sock, address, message.encode('utf-8'), TypeData.message)
 
 
 def send_file(address: tuple, path: str):
@@ -150,18 +164,30 @@ def send_file(address: tuple, path: str):
     with open(path, '+rb') as file:
         data = file.read()
     with get_socket() as sock:
-        send_data(sock, address, data)
+        send_data(sock, address, data, TypeData.file, filename=path.split('/')[-1])
 
 
-def server(address: tuple) -> None:
+def server(address: tuple) -> bool:
     '''Starts the server.'''
+    status = False
     with get_socket() as server:
         server.bind(address)
         print('START SERVER:' f'{address[0]}:{address[1]}')
-        data = accept_data(server)
+        try:
+            data, info = accept_data(server)
+            match info:
+                case [TypeData.message]:
+                    print(data.decode('utf-8'))
+                case [TypeData.file, filename]:
+                    with open(filename, '+wb') as file:
+                        file.write(data)
+            status = True
+        except socket.timeout as error:
+            print(sender, ', не доступен!')
+        except KeyboardInterrupt:
+            status = True
 
-    with open('y.png', '+wb') as file:
-        file.write(data)
+    return status
 
 
 def main(tcommand: list[str]):
@@ -173,17 +199,21 @@ def main(tcommand: list[str]):
     address = (ip, int(port))
 
     match tcommand[1:]:
-        case ['-m', message]:
+        case ['-m', message] if message:
             status = send_message(address, message)
-        case ['-f', path]:
+        case ['-f', path] if path:
             status = send_file(address, path)
         case ['-h']:
             status = documentation()
+        case ['-m']:
+            status = server(address)
+        case ['-f']:
+            status = server(address)
         case _:
             status = server(address)
 
     if status:
-        print(f'Status: [ {status} ]')
+        print('\r' + f'Status: [ {status} ]')
 
 
 if __name__ == '__main__':
