@@ -14,11 +14,10 @@ def documentation() -> bool:
     return status
 
 
-
 def send_message(address: tuple, message: str) -> bool:
     '''Sends the passed message.'''
     with get_socket() as sock:
-        send_data(sock, address, message.encode('utf-8'), fullfilename=TypeData.message)
+        send_file_data(message.encode('utf-8'), TypeData.message, sock, address)
 
 
 def send_file(address: tuple, path: str):
@@ -26,7 +25,7 @@ def send_file(address: tuple, path: str):
     with open(path, '+rb') as file:
         data = file.read()
     with get_socket() as sock:
-        send_data(sock, address, data, fullfilename=path.split('/')[-1])
+        send_file_data(data, path.split('/')[-1], sock, address)
 
 
 def server(address: tuple) -> bool:
@@ -36,7 +35,7 @@ def server(address: tuple) -> bool:
         server.bind(address)
         print('START SERVER:' f'{address[0]}:{address[1]}')
         try:
-            data, fullfilename = accept_data(server)
+            data, fullfilename = accept_file_data(server)
             print(fullfilename, len(data))
             match fullfilename:
                 case [TypeData.message]:

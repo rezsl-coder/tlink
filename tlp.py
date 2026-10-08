@@ -24,45 +24,24 @@ def accept_bar(value: int, max: int) -> None:
         print('\r' + bar, str(k) + '%', f'{value}/{max}', end='\n')
 
 
-def send_segment(sock: socket.socket, address: tuple, segment: bytes) -> tuple[bool, int]:
-    '''
-    Guarantees delivery of the segment to the recipient
-    if the recipient is available (by waiting for an acknowledgment).
-    '''
-    status = False
-    failed = 0
-    sock.settimeout(2)
-
-    while failed < 10:
-        sock.sendto(segment, address)
-        try:
-            response = sock.recv(2)
-        except socket.timeout:
-            failed += 1
-        else:
-            status = True
-            break
-
-    return status, failed
-
-
-def file_segmentation(data: bytes, fullfilename: bytes, segment_size: int = 1024) -> None:
+def segmentation_file_data(data: bytes, fullfilename: str, segment_size: int = 1024) -> list[bytes]:
     '''...'''
-    segments = []    
+    segments = []
+    fullfilename = fullfilename.encode('utf-8')
 
-    header = len(fullfilename).to_bytes(1) + fullfilename   
-    data = header + data
-    data_size = len(data)
+    header: bytes = len(fullfilename).to_bytes(1) + fullfilename   
+    data: bytes = header + data
 
-    subheader_size = 2 # 16 bit
-    subdata_size = (segment_size - subheader_size)
-    segments_number_max = (data_size // subdata_size) 
+    data_size: int = len(data)
+    subheader_size: int = 2 # 16 bit
+    subdata_size: int = (segment_size - subheader_size)
+    segments_number_max: int = (data_size // subdata_size) 
 
-    for number_current, start_offset in enumerate(range(0, data_size, subdata_size)):
-        end_offset = start_offset + subdata_size
+    for sequence_number, start_offset in enumerate(range(0, data_size, subdata_size)):
+        end_offset: int = start_offset + subdata_size
 
-        subdata = data[start_offset:end_offset]
-        subheader = (segments_number_max - number_current).to_bytes(subheader_size) # segment invert number
+        subdata: bytes = data[start_offset:end_offset]
+        subheader: bytes = (segments_number_max - sequence_number).to_bytes(subheader_size, byteorder='big') # segment invert number
  
         segment: bytes = subheader + subdata
         segments.append(segment)
@@ -70,22 +49,65 @@ def file_segmentation(data: bytes, fullfilename: bytes, segment_size: int = 1024
     return segments 
 
 
-def send_data(sock: socket.socket, address: tuple, data: bytes, fullfilename: str ) -> None:
-    '''
-    Sends data to the recipient in the form of many segments (pieces of data)
-    '''
-    segments: list = file_segmentation(data, fullfilename.encode('utf-8'), segment_size=1024*32)
-    unsuccessful_attempts = 0
+def send_file_data(data: bytes, fullfilename: str, sock: socket.socket, address: tuple) -> int:
+    '''...'''
+    segments: list[bytes] = segmentation_file_data(data, fullfilename, segment_size=1024*32)
 
-    for sequence_number, segment in enumerate(segments):
-        status, failed = send_segment(sock, address, segment)
-        unsuccessful_attempts += failed
-        if status:
-            accept_bar(sequence_number + 1, len(segments))
+    sock.settimeout(1)
+    sequence_number = 0
+    failed = 0
+    
+    while sequence_number < len(segments) and failed < 10:
+        segment = segments[sequence_number]
+        sock.sendto(segment, address)
+        try:
+            response = sock.recv(2)
+        except socket.timeout:
+            failed += 1
         else:
-            raise socket.timeout('Сервер не доступен, сделанно попыток:', unsuccessful_attempts)
+            sequence_number += 1
+            accept_bar(sequence_number, len(segments))
 
-    print('SEND:', len(data), 'FAILED:', unsuccessful_attempts)
+    return sequence_number  
+
+
+def accept_file_transfer(sock: socket.socket) -> tuple[bytes, int, str, tuple[str, int]]: 
+    '''...'''
+    segment_main, sender = sock.recvfrom(1024*32)
+
+    header_number: int = int.from_bytes(segment_main[:2], byteorder='big')
+    header_fullfilename_size: int = int.from_bytes(segment_main[2:3])
+    header_fullfilename: str = segment_main[3:header_fullfilename_size + 3].decode('utf-8')
+    subdata: bytes = segment_main[header_fullfilename_size + 3:]
+
+    sock.sendto(header_number.to_bytes(2), sender)
+
+    return subdata, header_number, header_fullfilename, sender
+
+
+def accept_file_data(sock: socket.socket) -> tuple[bytes, str]:
+    '''...'''
+    buffer, segment_number_max, fullfilename, sender = accept_file_transfer(sock)
+    segment_number_old = segment_number_max
+    sock.settimeout(10)
+
+    while segment_number_old != 0:
+        try:
+            segment: bytes = sock.recv(1024*32)
+            segment_number = int.from_bytes(segment[:2], byteorder='big')
+        except socket.timeout:
+            buffer = None
+        else:
+            sock.sendto(segment_number.to_bytes(byteorder='big'), sender)
+            if segment_number != segment_number_old:
+                buffer += segment[2:]
+                segment_number_old = segment_number
+                accept_bar(
+                    (segment_number_max - segment_number),
+                    segment_number_max
+                )
+
+    return buffer, fullfilename
 
 
 def accept_data(sock: socket.socket) -> tuple[bytes, str]:
@@ -95,12 +117,6 @@ def accept_data(sock: socket.socket) -> tuple[bytes, str]:
     '''
     buffer: bytes = b''
     segment_old: bytes = b''
-
-    segment_start, sender = sock.recvfrom(1024*32)
-    sock.sendto(segment_start[:2], sender)
-
-    header_offset_end = int.from_bytes(segment_start[2:3]) + 3
-    fullfilename = (segment_start[3:header_offset_end]).decode('utf-8')
 
     buffer += segment_start[header_offset_end:]
     segment_old = segment_start
