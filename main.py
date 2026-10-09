@@ -36,7 +36,6 @@ def server(address: tuple) -> bool:
         print('START SERVER:' f'{address[0]}:{address[1]}')
         try:
             data, fullfilename = accept_file_data(server)
-            print(fullfilename, len(data))
             match fullfilename:
                 case [TypeData.message]:
                     print(data.decode('utf-8'))
