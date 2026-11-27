@@ -24,7 +24,78 @@ def accept_bar(value: int, max: int) -> None:
         print('\r' + bar, str(k) + '%', f'{value}/{max}', end='\n')
 
 
-def segmentation_file_data(data: bytes, data_size: int, segment_size: int, segment_number_size: int) -> list[bytes]:
+def add_interval(interval, current_number) -> list:            
+    max_position = (len(interval) - 1)
+    current_position = max_position
+
+    while current_position > 0:
+        big_offset, small_offset = current_position - 1, current_position    
+
+        if (interval[small_offset] - 1) == current_number:
+            interval[small_offset] = current_number
+            break
+        elif (interval[big_offset] + 1) == current_number:
+            next_small_offset = big_offset - 1
+            if (interval[next_small_offset] - current_number) == 1:
+                interval[next_small_offset:small_offset] = []
+                max_position -= 2
+            else: interval[big_offset] = current_number
+            break
+        elif interval[big_offset] >= current_number >= interval[small_offset]:
+            break
+        elif interval[big_offset] > current_number:
+            interval[small_offset + 1:small_offset + 1] = [current_number]*2
+            max_position += 2
+            break
+
+        current_position -= 2
+    else:
+        if current_number > interval[0]: 
+            interval[0:0] = [current_number]*2
+            max_position += 2
+
+    return interval
+
+
+def remove_interval(interval, current_number) -> list:    
+    max_position = (len(interval) - 1)
+    current_position = max_position
+
+    while current_position >= 0: 
+        big_offset, small_offset = (
+            current_position - 1,
+            current_position
+        )
+        if current_number == interval[big_offset] \
+        and current_number == interval[small_offset]:
+            interval[big_offset:small_offset + 1] = []
+            break
+        elif current_number == interval[big_offset]:
+            interval[big_offset] = current_number - 1
+            break       
+        elif current_number == interval[small_offset]:
+            interval[small_offset] = \
+            current_number + 1
+            break
+
+        elif interval[big_offset] > \
+        current_number > interval[small_offset]:
+            interval[small_offset:small_offset]= [
+                current_number + 1,
+                current_number - 1
+            ]
+            break
+        current_position -= 2
+    else: raise Exception('Not, number')
+    return interval
+
+
+def segmentation_file_data(
+    data: bytes,
+    data_size: int,
+    segment_size: int,
+    segment_number_size: int
+    ) -> list[bytes]:
     '''...'''
     segments = []
     segments_number_max: int = (data_size // segment_size) 
@@ -71,25 +142,25 @@ def send_file_data(data: bytes, fullfilename: str, sock: socket.socket, address:
         segment = segment_number + segment_data
 
         sock.sendto(segment, address)
+
+        sequence_number += 1
     
         if sequence_number % 10 == 0 or sequence_number == 0:
-            response = sock.recv(1024)
+            try: response = sock.recv(1024)
+            except:
 
-
-
-
-    while sequence_number < len(segments) and failed < 10:
-        segment = segments[sequence_number]
-        sock.sendto(segment, address)
-        try:
-            response = sock.recv(2)
-        except socket.timeout:
-            failed += 1
-        else:
-            sequence_number += 1
-            accept_bar(sequence_number, len(segments))
-
-    return sequence_number  
+#    while sequence_number < len(segments) and failed < 10:
+#        segment = segments[sequence_number]
+#        sock.sendto(segment, address)
+#        try:
+#            response = sock.recv(2)
+#        except socket.timeout:
+#            failed += 1
+#        else:
+#            sequence_number += 1
+#            accept_bar(sequence_number, len(segments))
+#
+#    return sequence_number  
 
 
 def accept_file_transfer(sock: socket.socket) -> tuple[bytes, int, str, tuple[str, int]]: 
@@ -107,12 +178,13 @@ def accept_file_transfer(sock: socket.socket) -> tuple[bytes, int, str, tuple[st
 
 
 def accept_file_data(sock: socket.socket) -> tuple[bytes, str]:
-    
+    ...   
 
 
 def accept_file_data(sock: socket.socket) -> tuple[bytes, str]:
     '''...'''
     buffer = []
+    interval = []
 
 #    segment_data, segment_number, fullfilename, sender = accept_file_transfer(sock)
 #    segment_number_old = segment_number
@@ -124,16 +196,15 @@ def accept_file_data(sock: socket.socket) -> tuple[bytes, str]:
     end_offset = None
     previous_offset = None
 
+    increase_buffer: list = lambda: [None] * (segment_number - segment_number_max) + buffer
+
     request = b''
     while segment_number != 0:
         try:
             segment: bytes = sock.recv(1024*32)
             segment_number = int.from_bytes(segment[:2], byteorder='big')
         except socket.timeout:
-            count = 0
-            while True:
-                
-
+            sock.send_to(interval.from_bytes())
 #            if not request:
 #                sock.sendto(segment_number.to_bytes(byteorder='big'), sender)
 #                if failed == 10:
@@ -141,22 +212,16 @@ def accept_file_data(sock: socket.socket) -> tuple[bytes, str]:
 #                    break
         else:
             if segment_number_max == 0 or segment_number_max < segment_number:
-                buffer = [None] * (segment_number - segment_number_max) + buffer
+                buffer = increase_buffer()
                 segment_number_max = segment_number
          
             segment_position = segment_number_max - segment_number
             buffer[segment_position] = segment[2:]
+            interval = add_interval(interval, segment_number)
             accept_bar(
                 (segment_number_max - segment_number) + 1,
                 segment_number_max + 1
             )
-
-
-
-
-
-
-
 
     return buffer, fullfilename
 
